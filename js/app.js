@@ -6,6 +6,9 @@ import { lookalikes } from "./lookalikes.js";
 import { buildDocument, linesWithEmptyBoxes } from "./export.js";
 import * as Shapes from "./shapes.js";
 import { hasOpenFraction, hasEmptyFraction } from "./fraction.js";
+import { prepareAlphabet, readMath, readText } from "./recognizer.js";
+import { setupTrainer } from "./trainer.js";
+import { display } from "./symbols.js";
 
 MathfieldElement.fontsDirectory = new URL("../vendor/mathlive/fonts/", import.meta.url).href;
 MathfieldElement.soundsDirectory = null;
@@ -26,6 +29,8 @@ const settings = {
   jumpNext: true,
   useShared: true,
   proofEnv: true,
+  // "mine" (your own handwriting, in the browser) or "myscript"; chosen at startup if unset.
+  reader: null,
   ...JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}"),
 };
 const saveSettings = () => localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
@@ -338,8 +343,10 @@ const pad = new InkPad($("pad"), {
   },
   onStrokeEnd() {
     clearTimeout(convertTimer);
+    hideFix();
     if (settings.autoConvert && !pad.isEmpty) scheduleAutoConvert();
   },
+  onTap: (x, y) => openFix(x, y),
 });
 let convertTimer = 0;
 let converting = false;
@@ -359,6 +366,8 @@ function applySettingsToPad() {
   $("pad-hint").textContent = settings.penOnly
     ? "Write here with Apple Pencil"
     : "Write here (pencil, finger or mouse)";
+  // With the pencil-only setting, a finger tap corrects a symbol; otherwise use the button.
+  $("pad-fix").hidden = settings.reader !== "mine";
 }
 
 let lastInk = [];
@@ -444,15 +453,23 @@ async function convert({ auto = false } = {}) {
   try {
     let result;
     let raw = false;
-    const whole = line.kind === "text" ? Shapes.bestMatch(strokes, taught()) : null;
-    if (whole) {
-      // A taught shape written by itself on a text line becomes inline math.
-      result = `$${whole.shape.latex}$`;
-      raw = true;
-    } else if (wordsInMath || line.kind === "text") {
-      result = await recognize(strokes, "text", settings);
+    let groups = null;
+    if (settings.reader === "mine") {
+      const read = readWithMine(strokes, wordsInMath || line.kind === "text");
+      result = read.value;
+      groups = read.groups;
+      raw = true; // text results already have $…$ around any math symbols
     } else {
-      result = await recognizeMath(strokes);
+      const whole = line.kind === "text" ? Shapes.bestMatch(strokes, taught()) : null;
+      if (whole) {
+        // A taught shape written by itself on a text line becomes inline math.
+        result = `$${whole.shape.latex}$`;
+        raw = true;
+      } else if (wordsInMath || line.kind === "text") {
+        result = await recognize(strokes, "text", settings);
+      } else {
+        result = await recognizeMath(strokes);
+      }
     }
     lastInk = strokes;
     if (!result) {
@@ -492,7 +509,14 @@ async function convert({ auto = false } = {}) {
     } else {
       session = { line, el: line.el, before, after: line.el.value, afterSelection: selectionKey(line.el), version };
       pad.markConverted(sent);
-      setStatus("Keep writing to add to this, or tap Clear to start the next part");
+      if (groups) {
+        // Show what each symbol was read as, so a wrong one can be tapped and corrected.
+        lastRead = { strokes, groups };
+        pad.setLabels(groups.map((g) => ({ box: g.box, text: display(g.label) })));
+        setStatus(`Wrong symbol? Tap it with your finger${settings.penOnly ? "" : " (after Fix a symbol)"}. Keep writing to add more.`);
+      } else {
+        setStatus("Keep writing to add to this, or tap Clear to start the next part");
+      }
     }
   } catch (err) {
     setStatus(err.message, true);
@@ -504,6 +528,106 @@ async function convert({ auto = false } = {}) {
     if (pad.version !== version && !pad.isEmpty && settings.autoConvert) scheduleAutoConvert();
   }
 }
+
+// ---------- reading with your own handwriting ----------
+
+let alphabetCache = null;
+const alphabet = () => (alphabetCache ??= prepareAlphabet(myShapes));
+
+/** @returns {{value: string, groups: object[]}} */
+function readWithMine(strokes, asText) {
+  const a = alphabet();
+  if (!a.samples.length) {
+    throw new Error("Teach the site your handwriting first: My handwriting → Learn my handwriting.");
+  }
+  const read = asText ? readText(strokes, a) : readMath(strokes, a);
+  return { value: asText ? read.text : read.latex, groups: read.groups };
+}
+
+function addSample(latex, strokes) {
+  let shape = myShapes.find((s) => s.latex === latex);
+  if (!shape) myShapes.push((shape = { id: Shapes.newId(), latex, samples: [] }));
+  shape.samples.push(Shapes.compactStrokes(strokes));
+  saveShapes();
+}
+
+// ---------- correcting a symbol in the pad ----------
+
+/** The last ink read with your handwriting, and how it was split into symbols. */
+let lastRead = null;
+let fixTarget = null;
+
+function openFix(x, y) {
+  if (settings.reader !== "mine" || !lastRead || !pad.labels.length) {
+    setStatus("Convert first, then tap a symbol to correct it", true);
+    return;
+  }
+  // The symbol you tapped inside (or its label, just below it), else the nearest one.
+  const distance = ({ box: b }) => Math.hypot(Math.max(0, b.minX - x, x - b.maxX), Math.max(0, b.minY - y, y - b.maxY - 20));
+  const nearest = [...lastRead.groups].sort((a, b) => distance(a) - distance(b))[0];
+  if (!nearest || distance(nearest) > 25) {
+    setStatus("Tap right on the symbol you want to correct", true);
+    return;
+  }
+  fixTarget = nearest;
+  $("fix-current").innerHTML = convertLatexToMarkup(fixTarget.label);
+  $("fix-options").replaceChildren(
+    ...fixTarget.alternatives
+      .filter((a) => a.label !== fixTarget.label)
+      .slice(0, 7)
+      .map((a) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "tool";
+        b.title = a.label;
+        b.innerHTML = convertLatexToMarkup(a.label);
+        b.addEventListener("click", () => applyFix(a.label));
+        return b;
+      }),
+  );
+  $("fix-input").value = "";
+  const pop = $("fix-popover");
+  pop.hidden = false;
+  const padBox = $("pad").getBoundingClientRect();
+  const left = Math.max(4, Math.min(fixTarget.box.cx - pop.offsetWidth / 2, padBox.width - pop.offsetWidth - 4));
+  const below = fixTarget.box.maxY + 26;
+  const top = below + pop.offsetHeight < padBox.height ? below : Math.max(4, fixTarget.box.minY - pop.offsetHeight - 8);
+  pop.style.left = `${left}px`;
+  pop.style.top = `${top}px`;
+}
+
+function hideFix() {
+  $("fix-popover").hidden = true;
+  fixTarget = null;
+}
+
+/** Save the tapped symbol's ink as a drawing of `latex`, then read the ink again. */
+function applyFix(latex) {
+  const target = fixTarget;
+  hideFix();
+  latex = latex.trim();
+  if (!target || !latex) return;
+  if (validateLatex(latex).length) {
+    setStatus("That LaTeX isn't valid", true);
+    return;
+  }
+  addSample(latex, target.indices.map((i) => lastRead.strokes[i]));
+  if (session) session.version = -1;
+  convert();
+}
+
+$("fix-ok").addEventListener("click", () => applyFix($("fix-input").value));
+$("fix-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    applyFix($("fix-input").value);
+  }
+});
+$("fix-cancel").addEventListener("click", hideFix);
+$("pad-fix").addEventListener("click", (e) => {
+  pad.tapMode = !pad.tapMode;
+  e.currentTarget.setAttribute("aria-pressed", String(pad.tapMode));
+});
 
 /** Math recognition that knows about your taught shapes. */
 async function recognizeMath(strokes) {
@@ -552,6 +676,8 @@ $("pad-undo").addEventListener("click", () => {
 $("pad-clear").addEventListener("click", () => {
   clearTimeout(convertTimer);
   session = null;
+  lastRead = null;
+  hideFix();
   pad.clear();
   setStatus("");
 });
@@ -577,6 +703,7 @@ function setStatus(text, isError = false, { sticky = false } = {}) {
 // ---------- settings dialog ----------
 
 const settingInputs = {
+  reader: [$("reader"), "value"],
   applicationKey: [$("app-key"), "value"],
   hmacKey: [$("hmac-key"), "value"],
   penOnly: [$("pen-only"), "checked"],
@@ -599,7 +726,10 @@ $("settings").addEventListener("close", () => {
   saveSettings();
   applySettingsToPad();
   preparedShapes = null;
-  if (settings.applicationKey && settings.hmacKey) setStatus("Keys saved");
+  lastRead = null;
+  pad.setLabels([]);
+  if (settings.reader === "myscript" && settings.applicationKey && settings.hmacKey) setStatus("Keys saved");
+  else setStatus("");
 });
 
 // ---------- export dialog ----------
@@ -686,6 +816,7 @@ let preparedShapes = null;
 function saveShapes() {
   localStorage.setItem(SHAPES_KEY, JSON.stringify(myShapes));
   preparedShapes = null;
+  alphabetCache = null;
 }
 
 /** Your shapes plus (if turned on) the shared library, ready for matching. */
@@ -745,13 +876,10 @@ $("teach-save").addEventListener("click", () => {
   if (validateLatex(latex).length) return teachMessage("That LaTeX isn't valid yet.");
   if (!strokes.length) return teachMessage("Draw the shape first.");
   if (strokes.length > Shapes.MAX_GROUP) return teachMessage(`A taught shape can have at most ${Shapes.MAX_GROUP} strokes.`);
-  let shape = myShapes.find((s) => s.latex === latex);
-  if (!shape) myShapes.push((shape = { id: Shapes.newId(), latex, samples: [] }));
-  shape.samples.push(Shapes.compactStrokes(strokes));
-  saveShapes();
+  addSample(latex, strokes);
   teachPad.clear();
   renderShapeList();
-  const n = shape.samples.length;
+  const n = myShapes.find((s) => s.latex === latex).samples.length;
   teachMessage(n < 3 ? `Saved (${n} so far). Draw it again: 3 to 5 drawings works best.` : `Saved (${n} drawings).`);
 });
 $("teach-clear").addEventListener("click", () => {
@@ -823,6 +951,24 @@ $("open-shapes").addEventListener("click", () => {
   teachFeedback();
 });
 
+const trainer = setupTrainer({
+  penOnly: () => settings.penOnly,
+  countFor: (latex) => myShapes.find((s) => s.latex === latex)?.samples.length ?? 0,
+  onSample: (latex, strokes) => addSample(latex, strokes),
+  onFinish(saved) {
+    if (saved && settings.reader !== "mine") {
+      settings.reader = "mine";
+      saveSettings();
+      applySettingsToPad();
+    }
+    if (saved) setStatus("Now reading your handwriting. Write in the pad to try it.");
+  },
+});
+$("open-trainer").addEventListener("click", () => {
+  $("shapes").close();
+  trainer.open();
+});
+
 $("export-shapes").addEventListener("click", () => {
   if (!myShapes.length) return teachMessage("You haven't taught any shapes yet.");
   download(Shapes.toFile(myShapes), "my-shapes.json", "application/json");
@@ -857,11 +1003,22 @@ $("new-doc").addEventListener("click", () => {
 
 // ---------- start ----------
 
+// For tests and troubleshooting in the browser console.
+window.m2lDebug = {
+  pad,
+  get lastRead() {
+    return lastRead;
+  },
+};
+
+if (!settings.reader) settings.reader = "mine";
 applySettingsToPad();
 loadSharedShapes();
 renderTabs();
 renderLines();
 if (!lines.length) addLine("math");
-if (!settings.applicationKey) {
+if (settings.reader === "mine" && !myShapes.length) {
+  setStatus("Teach the site your handwriting: tap My handwriting → Learn my handwriting", true, { sticky: true });
+} else if (settings.reader === "myscript" && !settings.applicationKey) {
   setStatus("Add your free MyScript keys in Settings to convert handwriting", true, { sticky: true });
 }

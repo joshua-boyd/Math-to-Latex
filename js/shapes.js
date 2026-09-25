@@ -90,7 +90,8 @@ function cloudDistance(a, b, start) {
   return sum;
 }
 
-function cloudMatch(a, b) {
+/** $P distance between two point clouds from toCloud (0 = identical). */
+export function cloudMatch(a, b) {
   const step = Math.floor(Math.sqrt(N));
   let min = Infinity;
   for (let i = 0; i < N; i += step) {

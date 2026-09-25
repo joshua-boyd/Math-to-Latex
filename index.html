@@ -16,7 +16,7 @@
       <h1>Math → LaTeX</h1>
       <div class="topbar-actions">
         <button id="new-doc" type="button">New</button>
-        <button id="open-shapes" type="button">My shapes</button>
+        <button id="open-shapes" type="button">My handwriting</button>
         <button id="open-export" type="button" class="primary">Export LaTeX</button>
         <button id="open-settings" type="button">Settings</button>
       </div>
@@ -62,11 +62,21 @@
       <div class="pad-area">
         <canvas id="pad" aria-label="Writing area"></canvas>
         <div id="pad-hint" class="pad-hint">Write here with Apple Pencil</div>
+        <div id="fix-popover" class="fix-popover" hidden>
+          <div class="fix-title">Read as <span id="fix-current"></span>. It's actually:</div>
+          <div id="fix-options" class="fix-options"></div>
+          <div class="fix-other">
+            <input id="fix-input" placeholder="or type its LaTeX" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" />
+            <button id="fix-ok" type="button">OK</button>
+            <button id="fix-cancel" type="button">Cancel</button>
+          </div>
+        </div>
         <div class="pad-controls">
           <button id="convert" type="button" class="primary">Convert</button>
           <button id="pad-undo" type="button">Undo stroke</button>
           <button id="pad-erase" type="button" aria-pressed="false">Eraser</button>
           <button id="pad-clear" type="button">Clear</button>
+          <button id="pad-fix" type="button" aria-pressed="false" title="Then tap a symbol in the pad to correct it">Fix a symbol</button>
           <span id="status" class="status" role="status"></span>
         </div>
       </div>
@@ -75,6 +85,16 @@
     <dialog id="settings">
       <form method="dialog">
         <h2>Settings</h2>
+        <fieldset>
+          <legend>Handwriting reader</legend>
+          <label>
+            Read my writing with
+            <select id="reader">
+              <option value="mine">My handwriting (works offline, learns from your corrections)</option>
+              <option value="myscript">MyScript (online service, needs keys below)</option>
+            </select>
+          </label>
+        </fieldset>
         <fieldset>
           <legend>MyScript handwriting recognition (free)</legend>
           <p class="help">
@@ -92,7 +112,7 @@
           <label class="check"><input id="auto-convert" type="checkbox" /> Convert automatically when I pause</label>
           <label>Pause before converting (seconds) <input id="delay" type="number" min="0.3" max="5" step="0.1" /></label>
           <label class="check"><input id="jump-next" type="checkbox" /> After filling a box, jump to the next empty box</label>
-          <label class="check"><input id="use-shared" type="checkbox" /> Use shared shapes taught by other people</label>
+          <label class="check"><input id="use-shared" type="checkbox" /> With MyScript, also use shared shapes taught by other people</label>
         </fieldset>
         <fieldset>
           <legend>Export</legend>
@@ -120,15 +140,18 @@
 
     <dialog id="shapes">
       <form method="dialog">
-        <h2>My shapes</h2>
+        <h2>My handwriting</h2>
         <p class="help">
-          Teach the site symbols that get misread. Type the LaTeX, then draw the symbol 3–5 times, saving each one.
-          If two of your symbols get mixed up (say ∞ and 8), teach both. Taught shapes work inside lines too,
-          including in subscripts and fractions.
+          The site reads math by comparing what you write with your own drawings of each symbol.
+          Start with <b>Learn my handwriting</b> (about 10 minutes for the basics). After that, correct any
+          misread symbol by tapping it in the pad with your finger; each correction is saved as another drawing.
         </p>
+        <div class="dialog-actions start">
+          <button id="open-trainer" type="button" class="primary">Learn my handwriting…</button>
+        </div>
 
         <fieldset>
-          <legend>Teach a shape</legend>
+          <legend>Teach one symbol</legend>
           <label>LaTeX for this shape <input id="teach-latex" placeholder="\partial" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" /></label>
           <div class="teach-preview-row">Preview: <span id="teach-preview" class="teach-preview"></span></div>
           <div class="teach-pad-wrap">
@@ -142,7 +165,7 @@
           </div>
         </fieldset>
 
-        <h3>Taught shapes</h3>
+        <h3>Symbols taught</h3>
         <ul id="shape-list" class="shape-list"></ul>
 
         <div class="dialog-actions">
@@ -151,6 +174,61 @@
           <button value="close" class="primary">Done</button>
         </div>
         <input id="import-file" type="file" accept=".json,application/json" hidden />
+      </form>
+    </dialog>
+
+    <dialog id="trainer">
+      <form method="dialog">
+        <h2>Learn my handwriting</h2>
+
+        <div id="trainer-setup">
+          <p class="help">
+            You'll see one symbol at a time. Write it the way you normally do, at your normal size, in the box.
+            It moves on when you pause. Each symbol comes round several times. You can stop at any point;
+            everything you've written is kept.
+          </p>
+          <fieldset>
+            <legend>What to teach</legend>
+            <div id="trainer-sets" class="trainer-sets"></div>
+          </fieldset>
+          <label>
+            Drawings of each symbol
+            <select id="trainer-reps">
+              <option value="2">2 (quick)</option>
+              <option value="3" selected>3 (recommended)</option>
+              <option value="5">5 (most accurate)</option>
+            </select>
+          </label>
+          <label class="check"><input id="trainer-only-new" type="checkbox" checked /> Only symbols I haven't finished</label>
+          <p id="trainer-setup-note" class="warning-text"></p>
+          <div class="dialog-actions">
+            <button value="close">Cancel</button>
+            <button id="trainer-start" type="button" class="primary">Start</button>
+          </div>
+        </div>
+
+        <div id="trainer-run" hidden>
+          <div class="trainer-prompt">
+            Write: <span id="trainer-symbol" class="trainer-symbol"></span>
+            <span id="trainer-name" class="trainer-name"></span>
+          </div>
+          <div id="trainer-progress" class="help"></div>
+          <canvas id="trainer-pad" aria-label="Write the symbol here"></canvas>
+          <label class="check"><input id="trainer-auto" type="checkbox" checked /> Go to the next one when I pause</label>
+          <div class="dialog-actions">
+            <button id="trainer-redo" type="button">Redo</button>
+            <button id="trainer-skip" type="button" title="Skip every remaining drawing of this symbol">Skip symbol</button>
+            <button id="trainer-stop" type="button">Stop</button>
+            <button id="trainer-next" type="button" class="primary">Next</button>
+          </div>
+        </div>
+
+        <div id="trainer-done" hidden>
+          <p id="trainer-summary"></p>
+          <div class="dialog-actions">
+            <button value="close" class="primary">Done</button>
+          </div>
+        </div>
       </form>
     </dialog>
 

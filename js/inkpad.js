@@ -38,6 +38,12 @@ export class InkPad {
     this.pending = false;
     // Bumped on every change to the ink, so callers can tell whether anything is new.
     this.version = 0;
+    this.nextId = 0;
+    // What each symbol was read as, drawn under the ink: [{box, text}]
+    this.labels = [];
+    // When on, the next tap reports a position instead of drawing.
+    this.tapMode = false;
+    this.tap = null;
 
     new ResizeObserver(() => this.#resize()).observe(canvas);
     canvas.addEventListener("pointerdown", (e) => this.#down(e));
@@ -55,6 +61,7 @@ export class InkPad {
 
   getStrokes() {
     return this.strokes.map((s) => ({
+      id: s.id,
       pointerType: s.pointerType,
       x: s.points.map((p) => Math.round(p[0] * 10) / 10),
       y: s.points.map((p) => Math.round(p[1] * 10) / 10),
@@ -85,8 +92,14 @@ export class InkPad {
     this.#changed();
   }
 
+  setLabels(labels) {
+    this.labels = labels;
+    this.#draw();
+  }
+
   #changed() {
     this.version++;
+    this.labels = [];
     this.#draw();
   }
 
@@ -100,6 +113,7 @@ export class InkPad {
     const k = Math.min((width - 40) / w, (height - 40) / h, 3);
     const ox = (width - w * k) / 2, oy = (height - h * k) / 2;
     this.strokes = strokes.map((s) => ({
+      id: ++this.nextId,
       pointerType: s.pointerType || "pen",
       points: s.x.map((x, i) => [ox + (x - minX) * k, oy + (s.y[i] - minY) * k, s.p?.[i] ?? 0.5]),
       times: s.t ?? s.x.map((_, i) => i * 8),
@@ -125,6 +139,14 @@ export class InkPad {
   }
 
   #down(e) {
+    // A finger tap (when only the pencil writes), or any tap in tap mode, points at
+    // something instead of drawing.
+    if (this.tapMode || (this.penOnly && e.pointerType === "touch")) {
+      e.preventDefault();
+      const [x, y] = this.#point(e);
+      this.tap = { pointerId: e.pointerId, x, y };
+      return;
+    }
     if (!this.#allowed(e)) return;
     e.preventDefault();
     try {
@@ -161,10 +183,21 @@ export class InkPad {
   }
 
   #up(e) {
+    if (this.tap && this.tap.pointerId === e.pointerId) {
+      const [x, y] = this.#point(e);
+      const { x: x0, y: y0 } = this.tap;
+      this.tap = null;
+      if (Math.hypot(x - x0, y - y0) < 15) {
+        this.tapMode = false;
+        this.callbacks.onTap?.(x0, y0);
+      }
+      return;
+    }
     const c = this.current;
     if (!c || c.pointerId !== e.pointerId) return;
     this.current = null;
     if (c.erasing) return;
+    c.id = ++this.nextId;
     // A tap still counts as a stroke (dots on i, j, decimal points...).
     if (c.points.length === 1) {
       const [x, y, p] = c.points[0];
@@ -233,5 +266,21 @@ export class InkPad {
       ctx.fillStyle = s.converted ? "#9a9a94" : "#111";
       ctx.fill(outlineToPath(outline));
     }
+
+    // What each symbol was read as.
+    ctx.save();
+    ctx.font = "600 13px -apple-system, system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+    for (const { box, text } of this.labels) {
+      const x = (box.minX + box.maxX) / 2;
+      const y = Math.min(box.maxY + 4, height - 16);
+      const w = ctx.measureText(text).width + 8;
+      ctx.fillStyle = "rgba(229, 236, 251, 0.95)";
+      ctx.fillRect(x - w / 2, y - 1, w, 16);
+      ctx.fillStyle = "#2456c7";
+      ctx.fillText(text, x, y);
+    }
+    ctx.restore();
   }
 }

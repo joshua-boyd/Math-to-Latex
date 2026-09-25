@@ -20,18 +20,25 @@ function isBar(b) {
 
 /**
  * True if some bar has writing above it but not below, or below but not above.
- * A minus sign has nothing above or below it, so it doesn't count.
+ * Not counted: a minus sign (nothing above or below), the crossbar of an f or t
+ * (another stroke runs through it) and the lines of an = (a parallel line of the
+ * same length).
  */
 export function hasOpenFraction(strokes) {
   const boxes = strokes.map(bbox);
   return boxes.some((bar, i) => {
     if (!isBar(bar)) return false;
     const y = (bar.minY + bar.maxY) / 2;
-    const margin = (bar.maxX - bar.minX) * 0.1;
+    const w = bar.maxX - bar.minX;
+    const margin = w * 0.1;
+    const alongside = (b) => b.maxX > bar.minX && b.minX < bar.maxX;
+    if (boxes.some((b, j) => j !== i && alongside(b) && b.minY < y && b.maxY > y)) return false;
     let above = false;
     let below = false;
     boxes.forEach((b, j) => {
       if (j === i) return;
+      const bw = b.maxX - b.minX;
+      if (isBar(b) && bw > w * 0.6 && bw < w * 1.6) return; // the other line of an =
       const cx = (b.minX + b.maxX) / 2;
       if (cx < bar.minX - margin || cx > bar.maxX + margin) return;
       if (b.maxY < y) above = true;

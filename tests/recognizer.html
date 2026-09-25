@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Reader test</title>
+    <style>
+      body { font: 14px -apple-system, system-ui, sans-serif; margin: 24px; }
+      pre { background: #f6f6f3; padding: 12px; border-radius: 8px; white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <h1>“My handwriting” reader on synthetic handwriting</h1>
+    <p>Teaches the reader 3 wobbly drawings of each test symbol, then reads single symbols and whole expressions.</p>
+    <pre id="out">Running…</pre>
+    <script type="module">
+      import { run } from "./run-recognizer.js";
+      const lines = [];
+      for (const seed of [7, 21, 42]) {
+        const r = run({ seed, trials: 5 });
+        lines.push(`seed ${seed}: symbols ${r.symbols}, expressions ${r.expressions}, ${r.msPerRead} ms per read`);
+        for (const x of r.results.filter((x) => x.right < x.of)) lines.push(`  ${x.want}  ${x.right}/${x.of}   got: ${x.wrong.join(" | ")}`);
+      }
+      document.getElementById("out").textContent = lines.join("\n");
+    </script>
+  </body>
+</html>
