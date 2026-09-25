@@ -36,6 +36,8 @@ export class InkPad {
     this.penOnly = false;
     this.erasing = false;
     this.pending = false;
+    // Bumped on every change to the ink, so callers can tell whether anything is new.
+    this.version = 0;
 
     new ResizeObserver(() => this.#resize()).observe(canvas);
     canvas.addEventListener("pointerdown", (e) => this.#down(e));
@@ -62,7 +64,29 @@ export class InkPad {
   }
 
   undo() {
+    if (!this.strokes.length) return;
     this.strokes.pop();
+    this.#changed();
+  }
+
+  /** Strokes already converted are drawn in gray. */
+  markConverted(n) {
+    this.strokes.forEach((s, i) => (s.converted = i < n));
+    this.#draw();
+  }
+
+  get convertedCount() {
+    return this.strokes.filter((s) => s.converted).length;
+  }
+
+  /** Forget the converted strokes, keeping anything written since. */
+  removeConverted() {
+    this.strokes = this.strokes.filter((s) => !s.converted);
+    this.#changed();
+  }
+
+  #changed() {
+    this.version++;
     this.#draw();
   }
 
@@ -80,18 +104,13 @@ export class InkPad {
       points: s.x.map((x, i) => [ox + (x - minX) * k, oy + (s.y[i] - minY) * k, s.p?.[i] ?? 0.5]),
       times: s.t ?? s.x.map((_, i) => i * 8),
     }));
-    this.#draw();
-  }
-
-  removeFirst(n) {
-    this.strokes.splice(0, n);
-    this.#draw();
+    this.#changed();
   }
 
   clear() {
     this.strokes = [];
     this.current = null;
-    this.#draw();
+    this.#changed();
   }
 
   #allowed(e) {
@@ -153,6 +172,7 @@ export class InkPad {
       c.times.push(c.times[0] + 1);
     }
     this.strokes.push(c);
+    this.version++;
     this.#requestDraw();
     this.callbacks.onStrokeEnd?.();
   }
@@ -164,6 +184,7 @@ export class InkPad {
       (s) => !s.points.some(([px, py]) => Math.hypot(px - x, py - y) < radius),
     );
     if (this.strokes.length !== before) {
+      this.version++;
       this.#requestDraw();
       this.callbacks.onStrokeEnd?.();
     }
@@ -202,7 +223,6 @@ export class InkPad {
     ctx.stroke();
     ctx.restore();
 
-    ctx.fillStyle = "#111";
     const all = this.current && !this.current.erasing ? [...this.strokes, this.current] : this.strokes;
     for (const s of all) {
       const outline = getStroke(s.points, {
@@ -210,6 +230,7 @@ export class InkPad {
         simulatePressure: s.pointerType !== "pen",
         last: s !== this.current,
       });
+      ctx.fillStyle = s.converted ? "#9a9a94" : "#111";
       ctx.fill(outlineToPath(outline));
     }
   }

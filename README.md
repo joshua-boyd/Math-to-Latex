@@ -32,6 +32,11 @@ The site is plain HTML and JavaScript, so any static web server works.
 
 - **Write first, fix after.** Write a whole expression in the pad. When you pause it is
   converted into the active line, and then you fix anything that's wrong.
+- **Pausing is fine.** Converted ink stays in the pad in gray. If you keep writing (a fraction
+  bar and denominator, an exponent, more terms), everything is read again and replaces the
+  earlier result. Auto-convert also waits while a fraction bar has writing on only one side.
+  **Clear** starts the next part fresh; so do tapping a button, moving the cursor or switching
+  lines.
 - **Structure first, fill in the boxes.** Tap a button such as subscript, fraction or sum. An
   empty box appears and is selected. Write what goes in it, and it fills that box (then jumps
   to the next empty box). Tap subscript again inside a subscript to nest: `x`, subscript, `i`,

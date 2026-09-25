@@ -5,6 +5,7 @@ import { TABS, EDIT_BUTTONS, put } from "./toolbar.js";
 import { lookalikes } from "./lookalikes.js";
 import { buildDocument, linesWithEmptyBoxes } from "./export.js";
 import * as Shapes from "./shapes.js";
+import { hasOpenFraction, hasEmptyFraction } from "./fraction.js";
 
 MathfieldElement.fontsDirectory = new URL("../vendor/mathlive/fonts/", import.meta.url).href;
 MathfieldElement.soundsDirectory = null;
@@ -171,6 +172,7 @@ function releaseField(el) {
 
 function refreshLine(line) {
   const old = $("lines").querySelector(`[data-id="${line.id}"]`);
+  endSession();
   releaseField(line.el);
   old.replaceWith(createLineElement(line));
   highlightActive();
@@ -190,6 +192,7 @@ function iconButton(text, title, onClick) {
 
 function renderLines() {
   const ol = $("lines");
+  endSession();
   ol.querySelectorAll("math-field").forEach(releaseField);
   ol.replaceChildren(...lines.map(createLineElement));
   if (!lines.some((l) => l.id === activeId)) activeId = lines.at(-1)?.id ?? null;
@@ -229,6 +232,7 @@ function switchKind(line) {
 
 function setActive(id) {
   if (activeId === id) return;
+  endSession();
   activeId = id;
   highlightActive();
   updateSwap();
@@ -257,6 +261,7 @@ function makeToolButton(def) {
       setStatus("Tap a math line first", true);
       return;
     }
+    endSession();
     def.run(mf);
     syncField(mf);
     mf.focus();
@@ -314,6 +319,7 @@ function updateSwap() {
       b.addEventListener("pointerdown", (e) => e.preventDefault());
       b.addEventListener("click", () => {
         mf.selection = { ranges: [sym.range] };
+        endSession();
         put(mf, alt, { selectionMode: "item" });
         syncField(mf);
         mf.focus();
@@ -332,13 +338,18 @@ const pad = new InkPad($("pad"), {
   },
   onStrokeEnd() {
     clearTimeout(convertTimer);
-    if (settings.autoConvert && !pad.isEmpty) {
-      convertTimer = setTimeout(convert, settings.delay * 1000);
-    }
+    if (settings.autoConvert && !pad.isEmpty) scheduleAutoConvert();
   },
 });
 let convertTimer = 0;
 let converting = false;
+
+function scheduleAutoConvert() {
+  clearTimeout(convertTimer);
+  convertTimer = setTimeout(() => convert({ auto: true }), settings.delay * 1000);
+}
+
+const WAITING_FOR_FRACTION = "Waiting for the rest of the fraction… (tap Convert to insert it as is)";
 
 // Tapping the pad must not blur the math line (that would lose its selection).
 $("pad").addEventListener("pointerdown", (e) => e.preventDefault());
@@ -352,11 +363,80 @@ function applySettingsToPad() {
 
 let lastInk = [];
 
-async function convert() {
+// ---------- ink sessions ----------
+//
+// Converted ink stays in the pad (in gray). If you keep writing, all of it is read
+// again and the new result replaces the old one, so a fraction bar, denominator or
+// exponent added after a pause joins the expression instead of landing after it.
+// A session ends (the gray ink is cleared) when the line is changed any other way:
+// a button, typing, switching lines, filling a box, or Clear.
+
+/** @type {null | {line: object, el: HTMLElement, before: object, after: string, version: number}} */
+let session = null;
+
+function captureState(el) {
+  return el instanceof MathfieldElement
+    ? { value: el.value, selection: { ranges: el.selection.ranges.map((r) => [...r]) } }
+    : { value: el.value, start: el.selectionStart, end: el.selectionEnd };
+}
+
+function restoreState(el, state) {
+  el.value = state.value;
+  if (el instanceof MathfieldElement) el.selection = state.selection;
+  else el.setSelectionRange(state.start, state.end);
+}
+
+/** Start fresh: forget the converted ink (anything not yet converted stays). */
+function endSession() {
+  session = null;
+  if (pad.convertedCount) pad.removeConverted();
+}
+
+const selectionKey = (el) =>
+  el instanceof MathfieldElement ? JSON.stringify(el.selection.ranges) : `${el.selectionStart},${el.selectionEnd}`;
+
+/** The session continues only if its line (and cursor) haven't changed since the last conversion. */
+function sessionContinues(line) {
+  return (
+    session &&
+    session.line === line &&
+    session.el === line.el &&
+    line.el.value === session.after &&
+    selectionKey(line.el) === session.afterSelection
+  );
+}
+
+function syncLine(line) {
+  if (line.el instanceof MathfieldElement) syncField(line.el);
+  else line.el.dispatchEvent(new Event("input"));
+}
+
+/**
+ * @param {{auto?: boolean}} options  auto: started by the pause timer rather than the Convert button.
+ *   Auto-convert holds back fractions that are only half written; Convert always goes ahead.
+ */
+async function convert({ auto = false } = {}) {
   clearTimeout(convertTimer);
-  if (pad.isEmpty || converting) return;
+  if (converting) return;
   let line = activeLine() ?? addLine("math");
+  if (session && !sessionContinues(line)) endSession();
+  if (pad.isEmpty) {
+    // All of the session's ink was undone or erased: undo its result too.
+    if (session) {
+      restoreState(line.el, session.before);
+      syncLine(line);
+      session = null;
+    }
+    return;
+  }
+  if (session && session.version === pad.version) return; // nothing new since last time
   const strokes = pad.getStrokes();
+  const version = pad.version;
+  const mathInk = line.kind === "math" && (line.source || line.el.mode !== "text");
+  if (auto && mathInk && hasOpenFraction(strokes)) {
+    setStatus(WAITING_FOR_FRACTION, false, { sticky: true });
+    return;
+  }
   converting = true;
   setStatus("Converting…", false, { sticky: true });
   // Inside \text{...} on a math line, read the handwriting as words.
@@ -379,21 +459,49 @@ async function convert() {
       setStatus("Nothing recognized — try writing a little larger", true);
       return;
     }
-    // Only remove the strokes that were sent; keep anything written since.
-    pad.removeFirst(strokes.length);
+    if (auto && !wordsInMath && line.kind === "math" && hasEmptyFraction(result)) {
+      // Keep the ink and wait for the rest of the fraction.
+      setStatus(WAITING_FOR_FRACTION, false, { sticky: true });
+      return;
+    }
+    // The line may have been changed (or switched) while MyScript was working.
+    if (activeLine() !== line || (session && !sessionContinues(line))) {
+      if (session) endSession();
+      return;
+    }
+
+    // Replace the previous result from this same ink, or remember where we started.
+    const before = session ? session.before : captureState(line.el);
+    if (session) restoreState(line.el, session.before);
+
+    let filledBox = false;
     if (wordsInMath) {
       line.el.insert(result, { mode: "text", selectionMode: "after" });
       syncField(line.el);
-    }
-    else if (line.kind === "math" && line.source) insertText(line.el, result, { raw: true });
-    else if (line.kind === "math") insertMath(line.el, result);
+    } else if (line.kind === "math" && line.source) insertText(line.el, result, { raw: true });
+    else if (line.kind === "math") filledBox = insertMath(line.el, result);
     else insertText(line.el, result, { raw });
-    setStatus("");
+
+    const sent = strokes.length;
+    if (filledBox) {
+      // Filling a box is one step; the next writing goes into the next box.
+      session = null;
+      pad.markConverted(sent);
+      pad.removeConverted();
+      setStatus("");
+    } else {
+      session = { line, el: line.el, before, after: line.el.value, afterSelection: selectionKey(line.el), version };
+      pad.markConverted(sent);
+      setStatus("Keep writing to add to this, or tap Clear to start the next part");
+    }
   } catch (err) {
     setStatus(err.message, true);
   } finally {
     converting = false;
-    if (!pad.isEmpty && settings.autoConvert) convertTimer = setTimeout(convert, settings.delay * 1000);
+    // Only go again if the ink changed while this conversion was running. Retrying
+    // the same ink (after an error or a held-back fraction) would just repeat the
+    // same request and use up the free quota.
+    if (pad.version !== version && !pad.isEmpty && settings.autoConvert) scheduleAutoConvert();
   }
 }
 
@@ -413,6 +521,7 @@ async function recognizeMath(strokes) {
   return recognize(strokes, "math", settings);
 }
 
+/** @returns {boolean} whether this filled an empty box */
 function insertMath(mf, latex, { focus = true } = {}) {
   const fillingBox = !mf.selectionIsCollapsed && mf.getValue(mf.selection, "latex").includes("\\placeholder");
   put(mf, latex, { insertionMode: "replaceSelection", selectionMode: "after" });
@@ -421,6 +530,7 @@ function insertMath(mf, latex, { focus = true } = {}) {
   }
   syncField(mf);
   if (focus) mf.focus();
+  return fillingBox;
 }
 
 function insertText(textarea, text, { raw = false } = {}) {
@@ -433,11 +543,17 @@ function insertText(textarea, text, { raw = false } = {}) {
   textarea.focus();
 }
 
-$("convert").addEventListener("click", convert);
-$("pad-undo").addEventListener("click", () => pad.undo());
+$("convert").addEventListener("click", () => convert());
+$("pad-undo").addEventListener("click", () => {
+  pad.undo();
+  // Re-read what's left so the line matches the ink.
+  if (session) scheduleAutoConvert();
+});
 $("pad-clear").addEventListener("click", () => {
   clearTimeout(convertTimer);
+  session = null;
   pad.clear();
+  setStatus("");
 });
 $("pad-erase").addEventListener("click", (e) => {
   pad.erasing = !pad.erasing;
@@ -536,6 +652,7 @@ $("tex-input").addEventListener("input", () => {
 function insertTypedLatex() {
   const latex = $("tex-input").value.trim();
   if (!latex) return;
+  endSession();
   const line = activeLine() ?? addLine("math");
   if (line.kind === "math" && !line.source) {
     if (validateLatex(latex).length) {
