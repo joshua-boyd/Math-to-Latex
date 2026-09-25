@@ -66,6 +66,23 @@ export class InkPad {
     this.#draw();
   }
 
+  /** Show strokes from elsewhere (e.g. the main pad), scaled to fit this pad. */
+  load(strokes) {
+    const { width, height } = this.canvas.getBoundingClientRect();
+    const xs = strokes.flatMap((s) => s.x);
+    const ys = strokes.flatMap((s) => s.y);
+    const minX = Math.min(...xs), minY = Math.min(...ys);
+    const w = Math.max(...xs) - minX || 1, h = Math.max(...ys) - minY || 1;
+    const k = Math.min((width - 40) / w, (height - 40) / h, 3);
+    const ox = (width - w * k) / 2, oy = (height - h * k) / 2;
+    this.strokes = strokes.map((s) => ({
+      pointerType: s.pointerType || "pen",
+      points: s.x.map((x, i) => [ox + (x - minX) * k, oy + (s.y[i] - minY) * k, s.p?.[i] ?? 0.5]),
+      times: s.t ?? s.x.map((_, i) => i * 8),
+    }));
+    this.#draw();
+  }
+
   removeFirst(n) {
     this.strokes.splice(0, n);
     this.#draw();

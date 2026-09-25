@@ -1,9 +1,10 @@
-import { MathfieldElement, convertLatexToMarkup } from "../vendor/mathlive/mathlive.min.mjs";
+import { MathfieldElement, convertLatexToMarkup, validateLatex } from "../vendor/mathlive/mathlive.min.mjs";
 import { InkPad } from "./inkpad.js";
 import { recognize } from "./myscript.js";
 import { TABS, EDIT_BUTTONS, put } from "./toolbar.js";
 import { lookalikes } from "./lookalikes.js";
 import { buildDocument, linesWithEmptyBoxes } from "./export.js";
+import * as Shapes from "./shapes.js";
 
 MathfieldElement.fontsDirectory = new URL("../vendor/mathlive/fonts/", import.meta.url).href;
 MathfieldElement.soundsDirectory = null;
@@ -22,6 +23,7 @@ const settings = {
   autoConvert: true,
   delay: 1.2,
   jumpNext: true,
+  useShared: true,
   proofEnv: true,
   ...JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}"),
 };
@@ -38,7 +40,7 @@ const saveDoc = () =>
 const activeLine = () => lines.find((l) => l.id === activeId);
 const activeMathfield = () => {
   const line = activeLine();
-  return line?.kind === "math" ? line.el : null;
+  return line?.kind === "math" && !line.source ? line.el : null;
 };
 
 // ---------- document lines ----------
@@ -56,7 +58,37 @@ function createLineElement(line) {
   tag.addEventListener("click", () => switchKind(line));
 
   let field;
-  if (line.kind === "math") {
+  if (line.kind === "math" && line.source) {
+    // Editing the line's LaTeX source directly.
+    field = document.createElement("textarea");
+    field.className = "line-source";
+    field.rows = 1;
+    field.value = line.value;
+    field.autocapitalize = "off";
+    field.spellcheck = false;
+    field.setAttribute("autocorrect", "off");
+    const error = document.createElement("span");
+    error.className = "line-error";
+    const wrap = document.createElement("div");
+    wrap.className = "line-field";
+    wrap.style.display = "flex";
+    wrap.style.flexDirection = "column";
+    wrap.append(field, error);
+    li.append(tag, wrap);
+    const check = () => {
+      const errors = validateLatex(field.value);
+      li.classList.toggle("invalid", errors.length > 0);
+      error.textContent = errors.length ? `Not valid LaTeX yet (${errors[0].code})` : "";
+    };
+    field.addEventListener("input", () => {
+      line.value = field.value;
+      saveDoc();
+      autoGrow(field);
+      check();
+    });
+    requestAnimationFrame(() => autoGrow(field));
+    check();
+  } else if (line.kind === "math") {
     field = new MathfieldElement();
     field.className = "line-field";
     li.append(tag, field);
@@ -76,21 +108,24 @@ function createLineElement(line) {
     field.placeholder = "Text (you can type inline math as $x_i$)";
     field.value = line.value;
     li.append(tag, field);
-    const grow = () => {
-      field.style.height = "auto";
-      field.style.height = `${field.scrollHeight}px`;
-    };
     field.addEventListener("input", () => {
       line.value = field.value;
       saveDoc();
-      grow();
+      autoGrow(field);
     });
-    requestAnimationFrame(grow);
+    requestAnimationFrame(() => autoGrow(field));
   }
   line.el = field;
 
   const actions = document.createElement("div");
   actions.className = "line-actions";
+  if (line.kind === "math") {
+    const source = iconButton(line.source ? "Done" : "TeX", "Edit this line as LaTeX code", () => {
+      line.source = !line.source;
+      refreshLine(line);
+    });
+    actions.append(source);
+  }
   const copy = iconButton("Copy", "Copy this line's LaTeX", async () => {
     await navigator.clipboard.writeText(line.value);
     setStatus("Copied line");
@@ -104,6 +139,46 @@ function createLineElement(line) {
   return li;
 }
 
+/** MathLive doesn't always fire "input" for changes made from code, so save explicitly. */
+function syncField(mf) {
+  const line = lines.find((l) => l.el === mf);
+  if (line && line.value !== mf.value) {
+    line.value = mf.value;
+    saveDoc();
+  }
+  updateSwap();
+}
+
+function autoGrow(textarea) {
+  textarea.style.height = "auto";
+  textarea.style.height = `${textarea.scrollHeight}px`;
+}
+
+/**
+ * Call before removing a math field. MathLive (0.110) remembers the focused field and
+ * only lets go on a DOM blur event; if a field is removed while it still counts as
+ * focused, focusing any other field afterwards throws. So make it let go explicitly.
+ */
+function releaseField(el) {
+  if (!(el instanceof MathfieldElement)) return;
+  el.blur();
+  const inner = el._mathfield;
+  if (inner && !inner.blurred) {
+    inner.focusBlurInProgress = false;
+    inner.onBlur({ dispatchEvents: false });
+  }
+}
+
+function refreshLine(line) {
+  const old = $("lines").querySelector(`[data-id="${line.id}"]`);
+  releaseField(line.el);
+  old.replaceWith(createLineElement(line));
+  highlightActive();
+  updateSwap();
+  // A new math field isn't ready to take focus until it has rendered.
+  requestAnimationFrame(() => line.el.focus());
+}
+
 function iconButton(text, title, onClick) {
   const b = document.createElement("button");
   b.type = "button";
@@ -115,6 +190,7 @@ function iconButton(text, title, onClick) {
 
 function renderLines() {
   const ol = $("lines");
+  ol.querySelectorAll("math-field").forEach(releaseField);
   ol.replaceChildren(...lines.map(createLineElement));
   if (!lines.some((l) => l.id === activeId)) activeId = lines.at(-1)?.id ?? null;
   highlightActive();
@@ -182,6 +258,7 @@ function makeToolButton(def) {
       return;
     }
     def.run(mf);
+    syncField(mf);
     mf.focus();
   });
   return b;
@@ -238,6 +315,7 @@ function updateSwap() {
       b.addEventListener("click", () => {
         mf.selection = { ranges: [sym.range] };
         put(mf, alt, { selectionMode: "item" });
+        syncField(mf);
         mf.focus();
       });
       return b;
@@ -272,6 +350,8 @@ function applySettingsToPad() {
     : "Write here (pencil, finger or mouse)";
 }
 
+let lastInk = [];
+
 async function convert() {
   clearTimeout(convertTimer);
   if (pad.isEmpty || converting) return;
@@ -280,18 +360,34 @@ async function convert() {
   converting = true;
   setStatus("Converting…", false, { sticky: true });
   // Inside \text{...} on a math line, read the handwriting as words.
-  const wordsInMath = line.kind === "math" && line.el.mode === "text";
+  const wordsInMath = line.kind === "math" && !line.source && line.el.mode === "text";
   try {
-    const result = await recognize(strokes, wordsInMath ? "text" : line.kind, settings);
+    let result;
+    let raw = false;
+    const whole = line.kind === "text" ? Shapes.bestMatch(strokes, taught()) : null;
+    if (whole) {
+      // A taught shape written by itself on a text line becomes inline math.
+      result = `$${whole.shape.latex}$`;
+      raw = true;
+    } else if (wordsInMath || line.kind === "text") {
+      result = await recognize(strokes, "text", settings);
+    } else {
+      result = await recognizeMath(strokes);
+    }
+    lastInk = strokes;
     if (!result) {
       setStatus("Nothing recognized — try writing a little larger", true);
       return;
     }
     // Only remove the strokes that were sent; keep anything written since.
     pad.removeFirst(strokes.length);
-    if (wordsInMath) line.el.insert(result, { mode: "text", selectionMode: "after" });
+    if (wordsInMath) {
+      line.el.insert(result, { mode: "text", selectionMode: "after" });
+      syncField(line.el);
+    }
+    else if (line.kind === "math" && line.source) insertText(line.el, result, { raw: true });
     else if (line.kind === "math") insertMath(line.el, result);
-    else insertText(line.el, result);
+    else insertText(line.el, result, { raw });
     setStatus("");
   } catch (err) {
     setStatus(err.message, true);
@@ -301,17 +397,34 @@ async function convert() {
   }
 }
 
-function insertMath(mf, latex) {
+/** Math recognition that knows about your taught shapes. */
+async function recognizeMath(strokes) {
+  const shapes = taught();
+  const matches = shapes.length ? Shapes.findShapes(strokes, shapes) : [];
+  // Just one taught shape by itself: no need to ask MyScript at all.
+  if (matches.length === 1 && matches[0].count === strokes.length) return matches[0].shape.latex;
+  if (matches.length) {
+    const swap = Shapes.substitute(strokes, matches);
+    const result = await recognize(swap.strokes, "math", settings);
+    const restored = Shapes.restore(result, swap.latex, swap.count);
+    if (restored !== null) return restored;
+    // MyScript didn't place every stand-in; fall back to reading the ink as written.
+  }
+  return recognize(strokes, "math", settings);
+}
+
+function insertMath(mf, latex, { focus = true } = {}) {
   const fillingBox = !mf.selectionIsCollapsed && mf.getValue(mf.selection, "latex").includes("\\placeholder");
   put(mf, latex, { insertionMode: "replaceSelection", selectionMode: "after" });
   if (fillingBox && settings.jumpNext && mf.value.includes("\\placeholder")) {
     mf.executeCommand("moveToNextPlaceholder");
   }
-  mf.focus();
+  syncField(mf);
+  if (focus) mf.focus();
 }
 
-function insertText(textarea, text) {
-  const escaped = text.replace(/([&%#_$])/g, "\\$1");
+function insertText(textarea, text, { raw = false } = {}) {
+  const escaped = raw ? text : text.replace(/([&%#_$])/g, "\\$1");
   const { selectionStart: s, selectionEnd: e, value } = textarea;
   const before = value.slice(0, s);
   const spacer = before && !/\s$/.test(before) ? " " : "";
@@ -354,6 +467,7 @@ const settingInputs = {
   autoConvert: [$("auto-convert"), "checked"],
   delay: [$("delay"), "value"],
   jumpNext: [$("jump-next"), "checked"],
+  useShared: [$("use-shared"), "checked"],
   proofEnv: [$("proof-env"), "checked"],
 };
 
@@ -368,6 +482,8 @@ $("settings").addEventListener("close", () => {
   settings.delay = Math.min(5, Math.max(0.3, Number(settings.delay) || 1.2));
   saveSettings();
   applySettingsToPad();
+  preparedShapes = null;
+  if (settings.applicationKey && settings.hmacKey) setStatus("Keys saved");
 });
 
 // ---------- export dialog ----------
@@ -387,17 +503,227 @@ $("copy-tex").addEventListener("click", async () => {
   $("copy-tex").textContent = "Copied";
   setTimeout(() => ($("copy-tex").textContent = "Copy"), 1500);
 });
-$("download-tex").addEventListener("click", () => {
-  const blob = new Blob([$("export-text").value], { type: "application/x-tex" });
+function download(text, filename, type) {
   const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = "proof.tex";
+  a.href = URL.createObjectURL(new Blob([text], { type }));
+  a.download = filename;
   a.click();
-  URL.revokeObjectURL(a.href);
-});
+  // Safari needs the link to stay valid for a moment after the click.
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+}
+
+$("download-tex").addEventListener("click", () => download($("export-text").value, "proof.tex", "application/x-tex"));
 $("overleaf").addEventListener("click", () => {
   $("overleaf-snip").value = $("export-text").value;
   $("overleaf-form").submit();
+});
+
+// ---------- typing LaTeX ----------
+
+$("toggle-tex").addEventListener("click", () => {
+  const bar = $("tex-bar");
+  bar.hidden = !bar.hidden;
+  $("toggle-tex").setAttribute("aria-pressed", String(!bar.hidden));
+  if (!bar.hidden) $("tex-input").focus();
+});
+$("toggle-tex").addEventListener("pointerdown", (e) => e.preventDefault());
+
+$("tex-input").addEventListener("input", () => {
+  const latex = $("tex-input").value.trim();
+  $("tex-preview").innerHTML = latex ? convertLatexToMarkup(latex) : "";
+});
+
+function insertTypedLatex() {
+  const latex = $("tex-input").value.trim();
+  if (!latex) return;
+  const line = activeLine() ?? addLine("math");
+  if (line.kind === "math" && !line.source) {
+    if (validateLatex(latex).length) {
+      setStatus("That LaTeX isn't valid yet", true);
+      return;
+    }
+    // Keep the keyboard up for more typing.
+    insertMath(line.el, latex, { focus: false });
+  } else {
+    insertText(line.el, latex, { raw: true });
+  }
+  $("tex-input").value = "";
+  $("tex-preview").innerHTML = "";
+}
+$("tex-insert").addEventListener("click", insertTypedLatex);
+$("tex-insert").addEventListener("pointerdown", (e) => e.preventDefault());
+$("tex-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    insertTypedLatex();
+  }
+});
+
+// ---------- taught shapes ----------
+
+const SHAPES_KEY = "m2l-shapes";
+let myShapes = JSON.parse(localStorage.getItem(SHAPES_KEY) || "[]");
+let sharedShapes = [];
+let preparedShapes = null;
+
+function saveShapes() {
+  localStorage.setItem(SHAPES_KEY, JSON.stringify(myShapes));
+  preparedShapes = null;
+}
+
+/** Your shapes plus (if turned on) the shared library, ready for matching. */
+function taught() {
+  if (!preparedShapes) {
+    const shared = settings.useShared ? sharedShapes.map((s) => ({ ...s, shared: true })) : [];
+    preparedShapes = Shapes.prepare([...myShapes, ...shared]);
+  }
+  return preparedShapes;
+}
+
+async function loadSharedShapes() {
+  try {
+    const res = await fetch("shapes/shared.json", { cache: "no-cache" });
+    if (!res.ok) return;
+    sharedShapes = Shapes.fromFile(await res.text());
+    preparedShapes = null;
+  } catch {
+    // Offline or missing: your own shapes still work.
+  }
+}
+
+const teachPad = new InkPad($("teach-pad"), { onStrokeEnd: teachFeedback });
+
+function teachMessage(text) {
+  $("teach-feedback").textContent = text;
+}
+
+function teachFeedback() {
+  const strokes = teachPad.getStrokes();
+  if (!strokes.length) return teachMessage("Draw the shape once, by itself.");
+  const match = Shapes.bestMatch(strokes, taught(), { minScore: 0 });
+  if (!match) return teachMessage("This doesn't look like any taught shape yet.");
+  const needed = match.shape.shared ? Shapes.MIN_SCORE_SHARED : Shapes.MIN_SCORE;
+  const verdict = match.score >= needed ? "it would be recognized" : "too different to count as it";
+  $("teach-feedback").innerHTML = `Closest taught shape: ${convertLatexToMarkup(match.shape.latex)} — ${Math.round(match.score * 100)}%, ${verdict}.`;
+}
+
+$("teach-latex").addEventListener("input", () => {
+  const latex = $("teach-latex").value.trim();
+  $("teach-preview").innerHTML = latex
+    ? validateLatex(latex).length
+      ? "<span class='line-error'>not valid LaTeX yet</span>"
+      : convertLatexToMarkup(latex)
+    : "";
+});
+
+// Enter would otherwise submit (and close) the dialog.
+$("teach-latex").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") e.preventDefault();
+});
+
+$("teach-save").addEventListener("click", () => {
+  const latex = $("teach-latex").value.trim();
+  const strokes = teachPad.getStrokes();
+  if (!latex) return teachMessage("Type the LaTeX for this shape first (for example \\partial).");
+  if (validateLatex(latex).length) return teachMessage("That LaTeX isn't valid yet.");
+  if (!strokes.length) return teachMessage("Draw the shape first.");
+  if (strokes.length > Shapes.MAX_GROUP) return teachMessage(`A taught shape can have at most ${Shapes.MAX_GROUP} strokes.`);
+  let shape = myShapes.find((s) => s.latex === latex);
+  if (!shape) myShapes.push((shape = { id: Shapes.newId(), latex, samples: [] }));
+  shape.samples.push(Shapes.compactStrokes(strokes));
+  saveShapes();
+  teachPad.clear();
+  renderShapeList();
+  const n = shape.samples.length;
+  teachMessage(n < 3 ? `Saved (${n} so far). Draw it again: 3 to 5 drawings works best.` : `Saved (${n} drawings).`);
+});
+$("teach-clear").addEventListener("click", () => {
+  teachPad.clear();
+  teachFeedback();
+});
+$("teach-last").addEventListener("click", () => {
+  if (!lastInk.length) return teachMessage("Write the symbol by itself in the main pad and convert it first.");
+  if (lastInk.length > Shapes.MAX_GROUP) return teachMessage("What you last wrote has too many strokes. Write just the symbol, then try again.");
+  teachPad.load(lastInk);
+  teachFeedback();
+});
+
+function renderShapeList() {
+  const list = $("shape-list");
+  const rows = [
+    ...myShapes.map((s) => ({ ...s, shared: false })),
+    ...(settings.useShared ? sharedShapes.map((s) => ({ ...s, shared: true })) : []),
+  ];
+  if (!rows.length) {
+    const li = document.createElement("li");
+    li.className = "empty";
+    li.textContent = "No taught shapes yet.";
+    list.replaceChildren(li);
+    return;
+  }
+  list.replaceChildren(
+    ...rows.map((shape) => {
+      const li = document.createElement("li");
+      const preview = document.createElement("span");
+      preview.className = "shape-latex";
+      preview.innerHTML = convertLatexToMarkup(shape.latex);
+      const info = document.createElement("span");
+      info.className = "shape-info";
+      info.textContent = `${shape.latex} · ${shape.samples.length} drawing${shape.samples.length === 1 ? "" : "s"}`;
+      if (shape.shared) {
+        const badge = document.createElement("span");
+        badge.className = "badge";
+        badge.textContent = "shared";
+        info.append(badge);
+      }
+      const more = iconButton("Teach more", "Add more drawings of this shape", () => {
+        $("teach-latex").value = shape.latex;
+        $("teach-latex").dispatchEvent(new Event("input"));
+        teachPad.clear();
+        teachMessage(`Draw ${shape.latex} again, then save.`);
+        $("teach-pad").scrollIntoView({ block: "center" });
+      });
+      li.append(preview, info, more);
+      if (!shape.shared) {
+        li.append(
+          iconButton("Delete", "Forget this shape", () => {
+            if (!confirm(`Forget your drawings of ${shape.latex}?`)) return;
+            myShapes = myShapes.filter((s) => s.id !== shape.id);
+            saveShapes();
+            renderShapeList();
+          }),
+        );
+      }
+      return li;
+    }),
+  );
+}
+
+$("open-shapes").addEventListener("click", () => {
+  teachPad.penOnly = settings.penOnly;
+  renderShapeList();
+  $("shapes").showModal();
+  teachFeedback();
+});
+
+$("export-shapes").addEventListener("click", () => {
+  if (!myShapes.length) return teachMessage("You haven't taught any shapes yet.");
+  download(Shapes.toFile(myShapes), "my-shapes.json", "application/json");
+});
+$("import-shapes").addEventListener("click", () => $("import-file").click());
+$("import-file").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  e.target.value = "";
+  if (!file) return;
+  try {
+    const incoming = Shapes.fromFile(await file.text());
+    myShapes = Shapes.merge(myShapes, incoming);
+    saveShapes();
+    renderShapeList();
+    teachMessage(`Imported ${incoming.length} shape${incoming.length === 1 ? "" : "s"}.`);
+  } catch (err) {
+    teachMessage(err.message);
+  }
 });
 
 // ---------- document buttons ----------
@@ -415,6 +741,7 @@ $("new-doc").addEventListener("click", () => {
 // ---------- start ----------
 
 applySettingsToPad();
+loadSharedShapes();
 renderTabs();
 renderLines();
 if (!lines.length) addLine("math");

@@ -43,8 +43,40 @@ The site is plain HTML and JavaScript, so any static web server works.
 - **Swap look-alikes.** The yellow strip shows symbols that are often confused with the one
   before the cursor (or the selection): v/ν/∨, ε/∈, φ/∅, l/1/|, u/∪… Tap one to swap. Add your own
   pairs in [`js/lookalikes.js`](js/lookalikes.js).
+- **Type LaTeX.** The **Type LaTeX** button opens a box for typing LaTeX, which is inserted at the
+  cursor (or into the selected box). The **TeX** button on a line shows its whole LaTeX source
+  for editing; tap **Done** to go back to the rendered math.
 - **Text lines** are for the words of the proof. Handwriting there is read as text, and you can
   type inline math as `$x_i$`. Inside a math line, the **abc** button adds `\text{…}`.
+
+## Teaching shapes
+
+MyScript can't learn new symbols, so the site does it itself. In **My shapes**, type the LaTeX
+for a symbol (for example `\partial`), draw it, and tap **Save this drawing**. Do that 3–5 times.
+While you draw, it tells you which taught shape your drawing is closest to and whether it would
+count as a match.
+
+After that, whenever you write that symbol it's recognized as your LaTeX, alone or inside a line,
+including in subscripts and fractions. (It's swapped for a stand-in `#` of the same size and
+position before the ink goes to MyScript, then the `#` in MyScript's answer is replaced by your
+LaTeX.) If two of your symbols get confused, say ∞ and 8, teach both. **Use what I last wrote**
+loads the last ink you converted, so you can teach a symbol straight after it was misread.
+
+Taught shapes are saved in the browser. **Export** saves them to a file (keep a copy in iCloud
+Drive), and **Import** loads a file on another device or after browser data is cleared.
+
+### Shared shapes
+
+Shapes in [`shapes/shared.json`](shapes/shared.json) are used by everyone who opens the site
+(anyone can turn them off in Settings). They have to match more closely than your own shapes,
+since other people's handwriting differs. To add shapes to it, export them from the site, then:
+
+```
+python3 tools/merge_shapes.py my-shapes.json
+```
+
+and commit and push `shapes/shared.json`. Other people can send you their exported files the same
+way.
 - **Export LaTeX** gives a complete `.tex` file (copy it, download it, or open it in Overleaf).
   Consecutive math lines become one `gather*` block. It warns you about empty boxes you haven't
   filled.
@@ -62,4 +94,7 @@ Your document is saved automatically in the browser. **New** starts over, so exp
 | `js/toolbar.js` | Every button and what it inserts |
 | `js/lookalikes.js` | Groups of easily confused symbols |
 | `js/export.js` | Builds the `.tex` file |
+| `js/shapes.js` | Taught shapes: matching ($P point-cloud recognizer), stand-ins, import/export |
+| `shapes/shared.json` | Shared shapes everyone gets |
+| `tools/merge_shapes.py` | Adds exported shape files to the shared library |
 | `vendor/` | MathLive 0.110.0 and perfect-freehand 1.2.3, unmodified |

@@ -16,6 +16,7 @@
       <h1>Math → LaTeX</h1>
       <div class="topbar-actions">
         <button id="new-doc" type="button">New</button>
+        <button id="open-shapes" type="button">My shapes</button>
         <button id="open-export" type="button" class="primary">Export LaTeX</button>
         <button id="open-settings" type="button">Settings</button>
       </div>
@@ -35,8 +36,25 @@
         <div id="swap-options" class="swap-options"></div>
       </div>
 
+      <div id="tex-bar" class="tex-bar" hidden>
+        <input
+          id="tex-input"
+          placeholder="Type LaTeX, e.g. \mathcal{F}_{n}"
+          autocapitalize="off"
+          autocomplete="off"
+          autocorrect="off"
+          spellcheck="false"
+          enterkeyhint="done"
+        />
+        <span id="tex-preview" class="tex-preview"></span>
+        <button id="tex-insert" type="button" class="primary">Insert</button>
+      </div>
+
       <div class="tool-tabs">
-        <div id="tabs" class="tabs" role="tablist"></div>
+        <div class="tabs">
+          <div id="tabs" class="tabs" role="tablist"></div>
+          <button id="toggle-tex" type="button" aria-pressed="false">Type LaTeX</button>
+        </div>
         <div id="edit-buttons" class="edit-buttons"></div>
       </div>
       <div id="tab-buttons" class="tab-buttons"></div>
@@ -74,6 +92,7 @@
           <label class="check"><input id="auto-convert" type="checkbox" /> Convert automatically when I pause</label>
           <label>Pause before converting (seconds) <input id="delay" type="number" min="0.3" max="5" step="0.1" /></label>
           <label class="check"><input id="jump-next" type="checkbox" /> After filling a box, jump to the next empty box</label>
+          <label class="check"><input id="use-shared" type="checkbox" /> Use shared shapes taught by other people</label>
         </fieldset>
         <fieldset>
           <legend>Export</legend>
@@ -96,6 +115,42 @@
           <button id="overleaf" type="button">Open in Overleaf</button>
           <button value="close" class="primary">Close</button>
         </div>
+      </form>
+    </dialog>
+
+    <dialog id="shapes">
+      <form method="dialog">
+        <h2>My shapes</h2>
+        <p class="help">
+          Teach the site symbols that get misread. Type the LaTeX, then draw the symbol 3–5 times, saving each one.
+          If two of your symbols get mixed up (say ∞ and 8), teach both. Taught shapes work inside lines too,
+          including in subscripts and fractions.
+        </p>
+
+        <fieldset>
+          <legend>Teach a shape</legend>
+          <label>LaTeX for this shape <input id="teach-latex" placeholder="\partial" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" /></label>
+          <div class="teach-preview-row">Preview: <span id="teach-preview" class="teach-preview"></span></div>
+          <div class="teach-pad-wrap">
+            <canvas id="teach-pad" aria-label="Draw the shape here"></canvas>
+          </div>
+          <p id="teach-feedback" class="help">Draw the shape once, by itself.</p>
+          <div class="teach-actions">
+            <button id="teach-save" type="button" class="primary">Save this drawing</button>
+            <button id="teach-clear" type="button">Clear</button>
+            <button id="teach-last" type="button" title="Loads the last ink you converted (write the symbol by itself first)">Use what I last wrote</button>
+          </div>
+        </fieldset>
+
+        <h3>Taught shapes</h3>
+        <ul id="shape-list" class="shape-list"></ul>
+
+        <div class="dialog-actions">
+          <button id="import-shapes" type="button">Import…</button>
+          <button id="export-shapes" type="button">Export</button>
+          <button value="close" class="primary">Done</button>
+        </div>
+        <input id="import-file" type="file" accept=".json,application/json" hidden />
       </form>
     </dialog>
 
