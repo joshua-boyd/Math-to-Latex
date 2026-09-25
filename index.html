@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Math to LaTeX" />
+    <title>Math to LaTeX</title>
+    <link rel="stylesheet" href="vendor/mathlive/mathlive-static.css" />
+    <link rel="stylesheet" href="css/app.css" />
+    <script type="module" src="js/app.js"></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <h1>Math → LaTeX</h1>
+      <div class="topbar-actions">
+        <button id="new-doc" type="button">New</button>
+        <button id="open-export" type="button" class="primary">Export LaTeX</button>
+        <button id="open-settings" type="button">Settings</button>
+      </div>
+    </header>
+
+    <main id="doc" aria-label="Document">
+      <ol id="lines"></ol>
+      <div class="add-line">
+        <button id="add-math" type="button">+ Math line</button>
+        <button id="add-text" type="button">+ Text line</button>
+      </div>
+    </main>
+
+    <section id="tools" aria-label="Tools">
+      <div id="swap" class="swap" hidden>
+        <span class="swap-label">Swap <span id="swap-current"></span> for:</span>
+        <div id="swap-options" class="swap-options"></div>
+      </div>
+
+      <div class="tool-tabs">
+        <div id="tabs" class="tabs" role="tablist"></div>
+        <div id="edit-buttons" class="edit-buttons"></div>
+      </div>
+      <div id="tab-buttons" class="tab-buttons"></div>
+
+      <div class="pad-area">
+        <canvas id="pad" aria-label="Writing area"></canvas>
+        <div id="pad-hint" class="pad-hint">Write here with Apple Pencil</div>
+        <div class="pad-controls">
+          <button id="convert" type="button" class="primary">Convert</button>
+          <button id="pad-undo" type="button">Undo stroke</button>
+          <button id="pad-erase" type="button" aria-pressed="false">Eraser</button>
+          <button id="pad-clear" type="button">Clear</button>
+          <span id="status" class="status" role="status"></span>
+        </div>
+      </div>
+    </section>
+
+    <dialog id="settings">
+      <form method="dialog">
+        <h2>Settings</h2>
+        <fieldset>
+          <legend>MyScript handwriting recognition (free)</legend>
+          <p class="help">
+            Create a free account at
+            <a href="https://developer.myscript.com/getting-started/web" target="_blank" rel="noopener">developer.myscript.com</a>,
+            then copy your <b>application key</b> and <b>HMAC key</b> here. The first 2,000 requests each month are free.
+            Keys are stored only in this browser, never in the site's code.
+          </p>
+          <label>Application key <input id="app-key" autocomplete="off" spellcheck="false" /></label>
+          <label>HMAC key <input id="hmac-key" type="password" autocomplete="off" spellcheck="false" /></label>
+        </fieldset>
+        <fieldset>
+          <legend>Writing</legend>
+          <label class="check"><input id="pen-only" type="checkbox" /> Only Apple Pencil writes (ignore fingers and palm)</label>
+          <label class="check"><input id="auto-convert" type="checkbox" /> Convert automatically when I pause</label>
+          <label>Pause before converting (seconds) <input id="delay" type="number" min="0.3" max="5" step="0.1" /></label>
+          <label class="check"><input id="jump-next" type="checkbox" /> After filling a box, jump to the next empty box</label>
+        </fieldset>
+        <fieldset>
+          <legend>Export</legend>
+          <label class="check"><input id="proof-env" type="checkbox" /> Wrap everything in a <code>proof</code> environment</label>
+        </fieldset>
+        <div class="dialog-actions">
+          <button value="close" class="primary">Done</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="export">
+      <form method="dialog">
+        <h2>Export LaTeX</h2>
+        <p id="export-warning" class="warning" hidden></p>
+        <textarea id="export-text" readonly spellcheck="false"></textarea>
+        <div class="dialog-actions">
+          <button id="copy-tex" type="button">Copy</button>
+          <button id="download-tex" type="button">Download .tex</button>
+          <button id="overleaf" type="button">Open in Overleaf</button>
+          <button value="close" class="primary">Close</button>
+        </div>
+      </form>
+    </dialog>
+
+    <form id="overleaf-form" action="https://www.overleaf.com/docs" method="post" target="_blank" hidden>
+      <input type="hidden" name="snip" id="overleaf-snip" />
+    </form>
+  </body>
+</html>
